@@ -1,0 +1,24 @@
+# Build output
+build/
+install/
+log/
+*.o
+*.so
+*.a
+*.dylib
+*.exe
+
+# ROS 2 / colcon
+.colcon/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local runtime data
+*.bag
+*.db3
+*.log
+core
