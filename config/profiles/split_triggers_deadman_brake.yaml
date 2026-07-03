@@ -1,0 +1,29 @@
+chrono_joy_driver:
+  ros__parameters:
+    joy_topic: /joy
+
+    steering_axis: 0
+    invert_steering: false
+    steering_scale: 1.0
+
+    # Split-trigger example for controllers whose triggers rest at +1 and
+    # become negative when pressed. Adjust indices after `ros2 topic echo /joy`.
+    throttle_brake_axis: 1
+    throttle_axis: 5
+    brake_axis: 2
+    invert_throttle: true
+    invert_brake: true
+    throttle_scale: 1.0
+    brake_scale: 1.0
+
+    # Example shoulder buttons. Replace these with measured controller indices.
+    enable_button: 4
+    deadman_button: 5
+
+    deadzone: 0.1
+    joystick_timeout_seconds: 0.5
+    safe_brake_on_timeout: true
+    safe_brake_value: 0.4
+
+    step_size: 0.002
+    chrono_data_path: /usr/local/share/chrono/data/

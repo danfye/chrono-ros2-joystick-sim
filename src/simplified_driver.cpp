@@ -1,73 +1,156 @@
+#include <algorithm>
+#include <cmath>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+
+#include "chrono_sim_control/joystick_mapper.hpp"
+#include "chrono/assets/ChVisualShapeBox.h"
+#include "chrono/collision/ChCollisionShapeBox.h"
+#include "chrono/physics/ChSystem.h"
 #include "chrono/physics/ChSystemNSC.h"
-#include "chrono_vehicle/ChVehicleModelData.h"
-#include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
 #include "chrono_models/vehicle/hmmwv/HMMWV.h"
 #include "chrono_vehicle/ChTerrain.h"
-#include "chrono/physics/ChSystem.h"
+#include "chrono_vehicle/ChVehicleModelData.h"
 #include "chrono_vehicle/wheeled_vehicle/ChWheeledVehicleVisualSystemIrrlicht.h"
+#include "chrono_vehicle/wheeled_vehicle/vehicle/WheeledVehicle.h"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joy.hpp"
 
 using namespace chrono;
 using namespace chrono::vehicle;
-
-double g_throttle = 0;
-double g_steering = 0;
-double g_braking = 0;
+using namespace std::chrono_literals;
+using chrono_sim_control::JoystickMapper;
+using chrono_sim_control::JoystickMapperConfig;
 
 class JoySubscriberNode : public rclcpp::Node {
 public:
-    JoySubscriberNode() : Node("chrono_joy_driver") {
-        subscription_ = this->create_subscription<sensor_msgs::msg::Joy>(
-            "joy", 10, std::bind(&JoySubscriberNode::joy_callback, this, std::placeholders::_1));
+    JoySubscriberNode() : Node("chrono_joy_driver"), mapper_(LoadMapperConfig()) {
+        joy_topic_ = declare_parameter<std::string>("joy_topic", "/joy");
+        step_size_ = declare_parameter<double>("step_size", 0.002);
+        chrono_data_path_ = declare_parameter<std::string>("chrono_data_path", "/usr/local/share/chrono/data/");
+        mapper_.ResetSafetyTimer(get_clock()->now().seconds());
+
+        if (step_size_ <= 0.0) {
+            RCLCPP_WARN(get_logger(), "Invalid step_size %.6f; using 0.002", step_size_);
+            step_size_ = 0.002;
+        }
+
+        subscription_ = create_subscription<sensor_msgs::msg::Joy>(
+            joy_topic_,
+            10,
+            std::bind(&JoySubscriberNode::joy_callback, this, std::placeholders::_1));
+        safety_timer_ = create_wall_timer(100ms, std::bind(&JoySubscriberNode::safety_timer_callback, this));
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Listening on %s: steering_axis=%d throttle_brake_axis=%d throttle_axis=%d brake_axis=%d "
+            "deadzone=%.2f timeout=%.2fs safe_brake=%s/%.2f step_size=%.4f",
+            joy_topic_.c_str(),
+            mapper_.config().steering_axis,
+            mapper_.config().throttle_brake_axis,
+            mapper_.config().throttle_axis,
+            mapper_.config().brake_axis,
+            mapper_.config().deadzone,
+            mapper_.config().timeout_seconds,
+            mapper_.config().safe_brake_on_timeout ? "on" : "off",
+            mapper_.config().safe_brake_value,
+            step_size_);
     }
 
+    DriverInputs GetDriverInputs(double now_seconds) const {
+        const auto command = mapper_.CommandAt(now_seconds);
+        DriverInputs inputs;
+        inputs.m_steering = command.steering;
+        inputs.m_throttle = command.throttle;
+        inputs.m_braking = command.braking;
+        return inputs;
+    }
+
+    double GetStepSize() const { return step_size_; }
+    const std::string& GetChronoDataPath() const { return chrono_data_path_; }
+
 private:
-    void joy_callback(const sensor_msgs::msg::Joy::ConstSharedPtr msg) const {
-        if (msg->axes.size() <= 1) {
+    JoystickMapperConfig LoadMapperConfig() {
+        JoystickMapperConfig config;
+        config.steering_axis = declare_parameter<int>("steering_axis", config.steering_axis);
+        config.throttle_brake_axis = declare_parameter<int>("throttle_brake_axis", config.throttle_brake_axis);
+        config.throttle_axis = declare_parameter<int>("throttle_axis", config.throttle_axis);
+        config.brake_axis = declare_parameter<int>("brake_axis", config.brake_axis);
+        config.enable_button = declare_parameter<int>("enable_button", config.enable_button);
+        config.deadman_button = declare_parameter<int>("deadman_button", config.deadman_button);
+        config.steering_scale = declare_parameter<double>("steering_scale", config.steering_scale);
+        config.throttle_scale = declare_parameter<double>("throttle_scale", config.throttle_scale);
+        config.brake_scale = declare_parameter<double>("brake_scale", config.brake_scale);
+        config.invert_steering = declare_parameter<bool>("invert_steering", config.invert_steering);
+        config.invert_throttle = declare_parameter<bool>("invert_throttle", config.invert_throttle);
+        config.invert_brake = declare_parameter<bool>("invert_brake", config.invert_brake);
+        config.deadzone = declare_parameter<double>("deadzone", config.deadzone);
+        config.timeout_seconds = declare_parameter<double>("joystick_timeout_seconds", config.timeout_seconds);
+        config.safe_brake_on_timeout = declare_parameter<bool>("safe_brake_on_timeout", config.safe_brake_on_timeout);
+        config.safe_brake_value = declare_parameter<double>("safe_brake_value", config.safe_brake_value);
+        return config;
+    }
+
+    void joy_callback(const sensor_msgs::msg::Joy::ConstSharedPtr msg) {
+        const double now_seconds = get_clock()->now().seconds();
+        const auto command = mapper_.UpdateFromJoy(msg->axes, msg->buttons, now_seconds);
+        if (!mapper_.last_message_valid()) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "Joy message does not match configured axes/buttons");
             return;
         }
 
-        if (std::abs(msg->axes[0]) > 0.1 || std::abs(msg->axes[1]) > 0.1) {
-            RCLCPP_INFO(
-                this->get_logger(),
-                "Joy Control: Steer=%.2f, ThrottleAxis=%.2f",
-                msg->axes[0],
-                msg->axes[1]);
+        if (!mapper_.is_enabled()) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Joystick deadman/enable button is not pressed");
         }
 
-        g_steering = msg->axes[0];
-        double val = msg->axes[1];
-        if (val > 0) {
-            g_throttle = val;
-            g_braking = 0;
-        } else {
-            g_throttle = 0;
-            g_braking = -val;
+        if (std::abs(command.steering) > 0.0 || command.throttle > 0.0 || command.braking > 0.0) {
+            RCLCPP_INFO_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                500,
+                "Joy Control: steer=%.2f throttle=%.2f brake=%.2f",
+                command.steering,
+                command.throttle,
+                command.braking);
         }
     }
 
+    void safety_timer_callback() {
+        if (mapper_.is_timed_out(get_clock()->now().seconds())) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "No /joy input for %.2f seconds; applying safe command",
+                mapper_.config().timeout_seconds);
+        }
+    }
+
+    std::string joy_topic_;
+    double step_size_ = 0.002;
+    std::string chrono_data_path_;
+
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr subscription_;
+    rclcpp::TimerBase::SharedPtr safety_timer_;
+    JoystickMapper mapper_;
 };
 
 class SimpleFlatTerrain : public ChTerrain {
-private:
-    std::shared_ptr<ChContactMaterialNSC> m_material;
-
 public:
-    double GetHeight(const ChVector3d& loc) const override { return 0.0; }
-    ChVector3d GetNormal(const ChVector3d& loc) const override { return ChVector3d(0, 0, 1); }
-
-    std::shared_ptr<ChBody> terrain_body;
-
-    SimpleFlatTerrain(ChSystem* system) {
-        m_material = chrono_types::make_shared<ChContactMaterialNSC>();
-        m_material->SetFriction(0.8f);
+    explicit SimpleFlatTerrain(ChSystem* system) {
+        material_ = chrono_types::make_shared<ChContactMaterialNSC>();
+        material_->SetFriction(0.8f);
 
         terrain_body = chrono_types::make_shared<ChBody>();
         terrain_body->SetFixed(true);
 
-        auto shape = chrono_types::make_shared<ChCollisionShapeBox>(m_material, 200, 200, 1);
+        auto shape = chrono_types::make_shared<ChCollisionShapeBox>(material_, 200, 200, 1);
         terrain_body->AddCollisionShape(shape, ChFrame<>(ChVector3d(0, 0, -1), QUNIT));
         terrain_body->EnableCollision(true);
 
@@ -77,11 +160,38 @@ public:
 
         system->Add(terrain_body);
     }
+
+    double GetHeight(const ChVector3d& loc) const override {
+        (void)loc;
+        return 0.0;
+    }
+
+    ChVector3d GetNormal(const ChVector3d& loc) const override {
+        (void)loc;
+        return ChVector3d(0, 0, 1);
+    }
+
+    std::shared_ptr<ChBody> terrain_body;
+
+private:
+    std::shared_ptr<ChContactMaterialNSC> material_;
 };
 
+std::string EnsureTrailingSlash(const std::string& path) {
+    if (path.empty() || path.back() == '/') {
+        return path;
+    }
+
+    return path + "/";
+}
+
 int main(int argc, char* argv[]) {
-    SetChronoDataPath("/usr/local/share/chrono/data/");
-    vehicle::SetDataPath("/usr/local/share/chrono/data/vehicle/");
+    rclcpp::init(argc, argv);
+    auto ros_node = std::make_shared<JoySubscriberNode>();
+
+    const auto chrono_data_path = EnsureTrailingSlash(ros_node->GetChronoDataPath());
+    SetChronoDataPath(chrono_data_path);
+    vehicle::SetDataPath(chrono_data_path + "vehicle/");
 
     chrono::vehicle::hmmwv::HMMWV_Full my_hmmwv;
     my_hmmwv.SetContactMethod(ChContactMethod::NSC);
@@ -99,7 +209,7 @@ int main(int argc, char* argv[]) {
     SimpleFlatTerrain custom_terrain(my_hmmwv.GetSystem());
 
     auto vis = chrono_types::make_shared<ChWheeledVehicleVisualSystemIrrlicht>();
-    vis->SetWindowTitle("Chrono ROS2 HMMWV Control");
+    vis->SetWindowTitle("Chrono ROS 2 HMMWV Control");
     vis->SetChaseCamera(ChVector3d(0.0, 0.0, 1.75), 6.0, 0.5);
     vis->Initialize();
     vis->AttachVehicle(&my_hmmwv.GetVehicle());
@@ -116,20 +226,15 @@ int main(int argc, char* argv[]) {
     vis->EnableCollisionShapeDrawing(false);
     vis->EnableBodyFrameDrawing(false);
 
-    rclcpp::init(argc, argv);
-    auto ros_node = std::make_shared<JoySubscriberNode>();
-
-    double step_size = 2e-3;
+    const double step_size = ros_node->GetStepSize();
     while (vis->Run() && rclcpp::ok()) {
         rclcpp::spin_some(ros_node);
 
-        chrono::vehicle::DriverInputs driver_inputs;
-        driver_inputs.m_steering = g_steering;
-        driver_inputs.m_throttle = g_throttle;
-        driver_inputs.m_braking = g_braking;
+        const double time = my_hmmwv.GetSystem()->GetChTime();
+        const auto driver_inputs = ros_node->GetDriverInputs(ros_node->get_clock()->now().seconds());
 
-        my_hmmwv.Synchronize(my_hmmwv.GetSystem()->GetChTime(), driver_inputs, custom_terrain);
-        vis->Synchronize(my_hmmwv.GetSystem()->GetChTime(), driver_inputs);
+        my_hmmwv.Synchronize(time, driver_inputs, custom_terrain);
+        vis->Synchronize(time, driver_inputs);
 
         my_hmmwv.Advance(step_size);
         vis->Advance(step_size);

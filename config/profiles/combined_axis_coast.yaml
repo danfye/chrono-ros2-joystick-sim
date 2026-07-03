@@ -1,0 +1,27 @@
+chrono_joy_driver:
+  ros__parameters:
+    joy_topic: /joy
+
+    steering_axis: 0
+    invert_steering: false
+    steering_scale: 1.0
+
+    # One signed axis: positive throttle, negative brake.
+    throttle_brake_axis: 1
+    invert_throttle: false
+    invert_brake: false
+    throttle_axis: -1
+    brake_axis: -1
+    throttle_scale: 1.0
+    brake_scale: 1.0
+
+    enable_button: -1
+    deadman_button: -1
+
+    deadzone: 0.1
+    joystick_timeout_seconds: 0.5
+    safe_brake_on_timeout: true
+    safe_brake_value: 0.0
+
+    step_size: 0.002
+    chrono_data_path: /usr/local/share/chrono/data/
