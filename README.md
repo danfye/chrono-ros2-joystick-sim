@@ -145,6 +145,30 @@ timeout and deadman release visibly brake the HMMWV.
 
 ## Build the Docker Image
 
+## Quick Smoke Test Without ROS 2
+
+The joystick mapping core is intentionally separated from ROS 2 and Project
+Chrono dependencies. On a normal Linux or macOS machine with a C++17 compiler,
+run:
+
+```bash
+chmod +x scripts/run_mapper_smoke.sh
+./scripts/run_mapper_smoke.sh
+```
+
+Expected output:
+
+```text
+joystick mapper smoke ok
+```
+
+This smoke test verifies deadzone handling, throttle/brake mapping, steering,
+and timeout safety behavior. It is not a substitute for the full ROS 2 + Chrono
+simulation, but it gives reviewers a fast way to confirm the core control logic
+builds and runs before setting up the heavier container environment.
+
+## Build the Docker Image
+
 Build the image from the repository root:
 
 ```bash
