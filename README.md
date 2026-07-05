@@ -105,6 +105,8 @@ chrono_joy_driver:
 | `safe_brake_value` | `0.0` | Brake command used in timeout or deadman-inactive state. Use `0.0` for zero-input coast or a positive value for safety braking. |
 | `step_size` | `0.002` | Chrono simulation step size in seconds. |
 | `chrono_data_path` | `/usr/local/share/chrono/data/` | Project Chrono data directory. |
+| `headless` | `false` | Runs the Chrono driver without opening an Irrlicht window. Useful for automated local smoke tests. |
+| `max_runtime_seconds` | `0.0` | Stops the driver after this simulation time. `0.0` means run until interrupted or the window closes. |
 
 For most controllers, first run `ros2 topic echo /joy`, move each stick/trigger,
 and record the axis and button indices. Then update only the YAML file and
@@ -143,8 +145,6 @@ For bench tests, `safe_brake_value: 0.0` is gentle because it commands zero
 input. For vehicle-stop experiments, use a positive value such as `0.4` to make
 timeout and deadman release visibly brake the HMMWV.
 
-## Build the Docker Image
-
 ## Quick Smoke Test Without ROS 2
 
 The joystick mapping core is intentionally separated from ROS 2 and Project
@@ -152,7 +152,6 @@ Chrono dependencies. On a normal Linux or macOS machine with a C++17 compiler,
 run:
 
 ```bash
-chmod +x scripts/run_mapper_smoke.sh
 ./scripts/run_mapper_smoke.sh
 ```
 
@@ -166,6 +165,36 @@ This smoke test verifies deadzone handling, throttle/brake mapping, steering,
 and timeout safety behavior. It is not a substitute for the full ROS 2 + Chrono
 simulation, but it gives reviewers a fast way to confirm the core control logic
 builds and runs before setting up the heavier container environment.
+
+## Local ROS 2 Smoke Test With Cached Chrono
+
+If Chrono is already installed in a persistent local directory, run the ROS 2
+build, tests, and headless driver startup with:
+
+```bash
+./scripts/run_ros2_smoke.sh
+```
+
+By default the script uses:
+
+- Docker image: `chrono_ros2_deps:humble`
+- verification root: `/tmp/chrono_ros2_verify`
+- Chrono install: `/tmp/chrono_ros2_verify/chrono_install`
+
+Override those paths when needed:
+
+```bash
+IMAGE_NAME=chrono_ros2_deps:humble \
+VERIFY_ROOT=/tmp/chrono_ros2_verify \
+CHRONO_INSTALL=/tmp/chrono_ros2_verify/chrono_install \
+HEADLESS_RUNTIME_SECONDS=0.05 \
+./scripts/run_ros2_smoke.sh
+```
+
+The smoke test intentionally uses `headless:=true`, so it does not require X11,
+GPU passthrough, or a physical joystick. It also launches with
+`start_joy_node:=false`, because the smoke test publishes no physical joystick
+events.
 
 ## Build the Docker Image
 
@@ -235,6 +264,15 @@ The launch file starts:
 - `chrono_joy_driver` from this package
 
 The Chrono window should open through X11 and show the HMMWV on a flat grid.
+
+For a headless launch check without X11 or a joystick:
+
+```bash
+ros2 launch chrono_sim_control joystick_hmmwv.launch.py \
+  start_joy_node:=false \
+  headless:=true \
+  max_runtime_seconds:=0.05
+```
 
 ## Validate Without a Physical Joystick
 

@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     cmake \
+    freeglut3-dev \
     git \
     libgl1-mesa-dev \
     libglu1-mesa-dev \
